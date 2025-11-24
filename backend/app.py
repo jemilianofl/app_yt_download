@@ -17,6 +17,11 @@ def health():
 def convert():
     data = request.get_json()
     url = data.get('url')
+    
+    cookie_path = '/etc/secrets/cookies.txt'
+    
+    if not os.path.exists(cookie_path):
+        cookie_path = 'cookies.txt'
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
@@ -35,15 +40,8 @@ def convert():
         }],
         'quiet': True,
         'paths': {'home': '/tmp'},
-        
-        # AGREGA ESTO: Engañar a YT para que crea que somos una App de Android/iOS
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios']
-            }
-        },
-        # Y ESTO: Usar una IP aleatoria (a veces ayuda en local, menos en nube)
-        'geo_bypass': True,
+
+        'cookiefile': cookie_path,
     }
 
     try:
