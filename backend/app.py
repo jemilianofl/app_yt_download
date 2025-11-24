@@ -3,9 +3,9 @@ from flask_cors import CORS
 import yt_dlp
 import subprocess
 import os
+import random
 
 app = Flask(__name__)
-# Configuración de CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/health')
@@ -20,37 +20,62 @@ def convert():
     # Configuración de Cookies
     cookie_path = '/etc/secrets/cookies.txt'
     if not os.path.exists(cookie_path):
-        cookie_path = 'cookies.txt' # Fallback para local
+        cookie_path = 'cookies.txt' 
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
     try:
-        # PASO 1: Obtener el título primero (Rápido, sin descargar el audio aun)
-        with yt_dlp.YoutubeDL({'quiet': True, 'cookiefile': cookie_path}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'audio_descargado')
-            # Limpiamos el título
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
+        # User Agents rotativos para engañar un poco a YT
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ]
+        ua = random.choice(user_agents)
 
-        # PASO 2: Función Generadora (Streaming)
-        # Esto envía los datos al usuario a medida que llegan de YouTube
+        # Opciones preliminares para sacar el título
+        # Usamos el cliente 'android' que suele saltarse el bloqueo 429 mejor
+        ydl_opts_info = {
+            'quiet': True, 
+            'cookiefile': cookie_path,
+            'user_agent': ua,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'], # Prioridad a Android
+                }
+            }
+        }
+
+        # PASO 1: Obtener título
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'audio_descargado')
+                safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
+        except Exception as e:
+            # Si falla Android, intentamos un fallback genérico
+            safe_title = "audio_descarga_yt"
+            print(f"Advertencia obteniendo titulo: {e}")
+
+        # PASO 2: Streaming
         def generate():
-            # Comando para ejecutar yt-dlp y enviar el audio a la consola (stdout)
             cmd = [
                 'yt-dlp',
-                '--quiet',           # No mostrar logs basura
+                '--quiet',
                 '--no-warnings',
-                '-f', 'bestaudio/best', # Mejor calidad de audio
-                '-o', '-',           # <--- IMPORTANTE: '-' significa enviar a Salida Estándar (no archivo)
-                '--cookiefile', cookie_path, # Usamos tus cookies
+                '-f', 'bestaudio/best',
+                '-o', '-',
+                '--cookiefile', cookie_path,
+                '--user-agent', ua,
+                # TRUCOS ANTI-BLOQUEO:
+                '--extractor-args', 'youtube:player_client=android', # Fingir ser Android
+                '--sleep-requests', '1', # Esperar 1 seg entre peticiones internas
                 url
             ]
             
-            # Iniciamos el proceso
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-            # Leemos en trozos de 4KB y los enviamos al navegador
             try:
                 while True:
                     chunk = process.stdout.read(4096)
@@ -62,8 +87,6 @@ def convert():
                 process.kill()
                 print(f"Error en el stream: {e}")
 
-        # PASO 3: Responder con el Stream
-        # Nota: Usamos .webm o .m4a porque convertir a MP3 en tiempo real es inestable
         return Response(
             stream_with_context(generate()),
             headers={
