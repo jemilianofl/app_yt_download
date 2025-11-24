@@ -34,8 +34,16 @@ def convert():
             'preferredquality': '192',
         }],
         'quiet': True,
-        # Importante: usar /tmp en entornos linux como Render
-        'paths': {'home': '/tmp'} 
+        'paths': {'home': '/tmp'},
+        
+        # AGREGA ESTO: Engañar a YT para que crea que somos una App de Android/iOS
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios']
+            }
+        },
+        # Y ESTO: Usar una IP aleatoria (a veces ayuda en local, menos en nube)
+        'geo_bypass': True,
     }
 
     try:
