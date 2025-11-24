@@ -1,12 +1,11 @@
-from flask import Flask, request, send_file, jsonify, after_this_request
+from flask import Flask, request, Response, stream_with_context, jsonify
 from flask_cors import CORS
 import yt_dlp
+import subprocess
 import os
-import uuid
 
 app = Flask(__name__)
-# Habilitar CORS para que Vercel pueda hablar con Render.
-# En producción, cambia "*" por "https://tu-proyecto.vercel.app" para más seguridad.
+# Configuración de CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/health')
@@ -18,58 +17,59 @@ def convert():
     data = request.get_json()
     url = data.get('url')
     
+    # Configuración de Cookies
     cookie_path = '/etc/secrets/cookies.txt'
-    
     if not os.path.exists(cookie_path):
-        cookie_path = 'cookies.txt'
+        cookie_path = 'cookies.txt' # Fallback para local
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    # Generamos un nombre único para evitar choques entre usuarios
-    temp_id = str(uuid.uuid4())
-    temp_filename = f"download_{temp_id}"
-    
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': f'{temp_filename}.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'quiet': True,
-        'paths': {'home': '/tmp'},
-
-        'cookiefile': cookie_path,
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'audio')
-            # Limpiamos el título de caracteres raros para la descarga
+        # PASO 1: Obtener el título primero (Rápido, sin descargar el audio aun)
+        with yt_dlp.YoutubeDL({'quiet': True, 'cookiefile': cookie_path}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'audio_descargado')
+            # Limpiamos el título
             safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
-        # La ruta del archivo generado (en /tmp)
-        file_path = f"/tmp/{temp_filename}.mp3"
+        # PASO 2: Función Generadora (Streaming)
+        # Esto envía los datos al usuario a medida que llegan de YouTube
+        def generate():
+            # Comando para ejecutar yt-dlp y enviar el audio a la consola (stdout)
+            cmd = [
+                'yt-dlp',
+                '--quiet',           # No mostrar logs basura
+                '--no-warnings',
+                '-f', 'bestaudio/best', # Mejor calidad de audio
+                '-o', '-',           # <--- IMPORTANTE: '-' significa enviar a Salida Estándar (no archivo)
+                '--cookiefile', cookie_path, # Usamos tus cookies
+                url
+            ]
+            
+            # Iniciamos el proceso
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # ESTO ES CRUCIAL: Programar el borrado del archivo después de enviarlo
-        @after_this_request
-        def remove_file(response):
+            # Leemos en trozos de 4KB y los enviamos al navegador
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(f"Deleted: {file_path}")
+                while True:
+                    chunk = process.stdout.read(4096)
+                    if not chunk:
+                        break
+                    yield chunk
+                process.wait()
             except Exception as e:
-                print(f"Error deleting file: {e}")
-            return response
+                process.kill()
+                print(f"Error en el stream: {e}")
 
-        return send_file(
-            file_path, 
-            as_attachment=True, 
-            download_name=f"{safe_title}.mp3",
-            mimetype="audio/mpeg"
+        # PASO 3: Responder con el Stream
+        # Nota: Usamos .webm o .m4a porque convertir a MP3 en tiempo real es inestable
+        return Response(
+            stream_with_context(generate()),
+            headers={
+                "Content-Disposition": f"attachment; filename={safe_title}.webm",
+                "Content-Type": "audio/webm"
+            }
         )
 
     except Exception as e:
